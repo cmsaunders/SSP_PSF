@@ -487,8 +487,8 @@ class Star(object):
                     print vars
                     print A
                     print B
-                    raise ValueError("Problem with Hessian of chi2, look at A 
-                                     because this should not happen")
+                    raise ValueError("Problem with Hessian of chi2, look at A "
+                                     "because this should not happen")
 
                 solution = SL.cho_solve(factor, B)
 
@@ -552,9 +552,29 @@ class Star(object):
 
 
 class MoffatPSF(object):
+    """This class produces postage-stamps for a Moffat PSF model with beta=2.5.
+    The PSF parameters are allowed to vary as a poluynomial function of the 
+    position (presumed to be the position on a ccd).
 
-    def __init__(self, hsize, xc, yc, full_data, full_weights, gain, fluxmax, degree=1):
-
+    Parameters
+    ----------
+    hsize : int
+        Determines stamp size, where each side = 2*hsize + 1
+    xc : numpy.ndarray (float)
+        x-dimension position of psf centers
+    yc : numpy.ndarray (float)
+        y-dimension position of psf centers
+    xmax, ymax : int
+        Dimensions of the full image used to normalize the psf spatial 
+        parameters. Essentially arbitrary.
+    degree : int
+        Sets the degree of the polynomial function for spatial variation
+    seeing : float 
+        Gaussian seeing to make initial guess of moffat parameters
+    """
+    #def __init__(self, hsize, xc, yc, full_data, full_weights, gain, fluxmax, degree=1):
+    def __init__(self, hsize, xc, yc, xmax=1, ymax=1, degree=1, seeing=3):
+        
         self.name = "MOFFAT25"
 
         self.xc = xc
@@ -572,15 +592,10 @@ class MoffatPSF(object):
         self.x_inds = self.xi[None,:,:] - xdiffs[:,None,None]
         self.y_inds = self.yi[None,:,:] - ydiffs[:,None,None]
 
-        # Load data:
-        self.full_data = full_data
-        self.full_weights = full_weights
         self.outliers = np.zeros(self.n_stars, dtype=bool)
         self.use_outliers = np.zeros(self.n_stars, dtype=bool)
-        self.ymax, self.xmax = full_data.shape
-
-        self.gain = gain
-        self.fluxmax = fluxmax
+        #self.ymax, self.xmax = full_data.shape
+        self.ymax, self.xmax = ymax, xmax
 
         # Set up parameters to normalize the CCD-position dependent polynomials:
         self.ax = 2./self.xmax
@@ -598,16 +613,30 @@ class MoffatPSF(object):
         # Calculate the number of variables:
         self.nvars = self.n_stars + self.degree * 3
 
+        self.initparamsfromseeing(seeing)
+
+    def set_data(self, data, weights, gain, fluxmax=None):
+
+        # Load data:
+        self.full_data = full_data
+        self.full_weights = full_weights
+
+        # Need gain to correct weights:
+        self.gain = gain
+
+        # Fluxmax is just carried through so it is output
+        if self.fluxmax is None:
+            self.fluxmax = np.zeros(self.n_stars)
+        else:
+            self.fluxmax = fluxmax
+
     def initparamsfromseeing(self, seeing):
 
-        self.wxx_vector = np.zeros(self.degree)
-        self.wyy_vector = np.zeros(self.degree)
-        self.wxy_vector = np.zeros(self.degree)
-
         init_w = (0.6547/seeing)**2
-        self.wxx_vector[0] = init_w
-        self.wyy_vector[0] = init_w
-
+        w_vars = np.zeros(self.degree * 3)
+        w_vars[0] = init_w
+        w_vars[self.degree] = init_w
+        self.set_moffat(w_vars)
 
     def reset_pos(self):
         # Given changed self.xc and self.yc, reset helper variables
@@ -692,6 +721,11 @@ class MoffatPSF(object):
     def moffat_fit(self, init_seeing=5, init_fluxes=None, 
                    max_iter=20, chi_tol=1e-5):
 
+        try:
+            self.full_data
+        except:
+            raise ValueError('self.full_data must be set in order to '
+                             'fit moffat')
         # Get initial estimate of the Moffat PSF from the Gaussian seeing:
         self.initparamsfromseeing(init_seeing)
         # The initial parameters:
@@ -820,7 +854,7 @@ class MoffatPSF(object):
 
 class PSFResiduals(object):
 
-    def __init__(self, hsize, xc, yc, phi, stars, gain, xmax, ymax, 
+    def __init__(self, hsize, xc, yc, phi, xmax=1, ymax=1, 
                  degree=1, fx=True, fx_index=(0,0)):
 
         self.xc = xc
@@ -830,19 +864,6 @@ class PSFResiduals(object):
         self.hsize = hsize
         self.nd = 2*self.hsize + 1
         self.n_r = self.nd**2
-
-        # Allow for debug cases where we don't have a list of stars
-        try:
-            self.data = np.array([S.data_slice for S in stars])
-            self.weights = np.array([S.weight_slice for S in stars])
-            self.init_weights_inv = np.copy(self.weights**-1)
-        except:
-            self.data = np.zeros((self.n_stars, self.nd, self.nd))
-            self.weights = np.zeros_like(self.data)
-        self.stars = np.array(stars)
-
-        self.bad_pix = np.zeros_like(self.weights, dtype=bool)
-        self.gain = gain
 
         # Degree of polynomial of R function determines shape of arrays:
         deg_dict = {0: 1, 1: 3, 2: 6}
@@ -877,7 +898,16 @@ class PSFResiduals(object):
         self.rder = np.repeat(self.cder[:self.degree], self.n_r, axis=0).T
         self.rtile = np.tile(self.cder[:self.degree], (self.n_r, 1, 1)).T
 
-        
+    def set_data(self, stars, gain):
+        # Allow for debug cases where we don't have a list of stars
+
+        self.stars = np.array(stars)        
+        self.data = np.array([S.data_slice for S in stars])
+        self.weights = np.array([S.weight_slice for S in stars])
+
+        self.init_weights_inv = np.copy(self.weights**-1)
+        self.bad_pix = np.zeros_like(self.weights, dtype=bool)
+        self.gain = gain        
 
     #@profile
     def reset_pos(self):
@@ -915,7 +945,8 @@ class PSFResiduals(object):
     def set_weights(self, vars, rconv):
         # The weights need to be corrected for the flux of the star
         fluxes = vars[:self.n_stars]
-        correction = fluxes[:,None] * self.psi_model(vars, rconv) / self.gain
+        correction = fluxes[:,None] * self.psi_model(vars, rconv=rconv) \
+                     / self.gain
         self.weights = (self.init_weights_inv + correction)**-1
         self.weights[self.bad_pix] = 0
 
@@ -989,9 +1020,16 @@ class PSFResiduals(object):
                   (self.phi**2 * self.weights).sum(axis=1))
         return fluxes
 
-    def psi_model(self, vars, rconv):
+    def psi_model(self, vars, rconv=None):
         # Combine analytic and discrete parts of the model:
-
+        if rconv is None:
+            r = vars[self.n_stars:self.n_stars 
+                     + self.n_r * self.degree].reshape(self.degree,
+                                                       self.n_r)
+            r_poly = np.array([self.convolve(rr) for rr in r])
+            r_poly = np.transpose(r_poly, (1, 0, 2))
+            rconv = (r_poly * self.rtile).sum(axis=1)
+        
         cs = vars[self.n_stars + self.degree * self.nd**2:][:self.degree]
         c_poly = (cs[:,None] * self.cder).sum(axis=0)
         psi = ((1 - c_poly.reshape(-1,1))*self.phi + rconv)
@@ -1002,7 +1040,7 @@ class PSFResiduals(object):
         # Calculate the chi2 of the model
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv)
+        psi = self.psi_model(vars, rconv=rconv)
         lam = vars[-self.degree:]
         chi = (self.weights * (self.data - flux.reshape(-1,1)*psi)**2)
         return chi.sum(axis=1)
@@ -1045,7 +1083,7 @@ class PSFResiduals(object):
         # Find outlier pixels and set their weights to zero
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv)
+        psi = self.psi_model(vars, rconv=rconv)
         model = flux[:,None] * psi
         resids = self.data - model
         
@@ -1066,7 +1104,7 @@ class PSFResiduals(object):
                                 * self.nd**2].reshape(self.degree, self.n_r)
         cs = vars[self.n_stars + self.degree * self.nd**2:][:self.degree]
 
-        psi = self.psi_model(vars, rconv)
+        psi = self.psi_model(vars, rconv=rconv)
         lam = vars[-self.degree:]
         chi = (self.weights * (self.data - flux[:,None]*psi)**2).sum()
 
@@ -1084,7 +1122,7 @@ class PSFResiduals(object):
 
     def dlagdf_h(self,vars, rconv):
 
-        psi = self.psi_model(vars, rconv)
+        psi = self.psi_model(vars, rconv=rconv)
         dldf = -psi
 
         return dldf
@@ -1130,7 +1168,7 @@ class PSFResiduals(object):
         A = np.zeros((self.all_vars, self.all_vars))
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv)
+        psi = self.psi_model(vars, rconv=rconv)
         res = self.data - flux[:, None] * psi
 
         # Set up some variables that will be used multiple times below:
@@ -1518,7 +1556,7 @@ class PSFResiduals(object):
     
         self.final_chi2s = chi2s
 
-        final_psi = self.psi_model(fit_vars, r_poly)
+        final_psi = self.psi_model(fit_vars, rconv=r_poly)
         print final_psi.sum(axis=1)
         self.final_model = self.fluxes[:,None] * final_psi
 
