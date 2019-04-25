@@ -79,7 +79,7 @@ def get_data(path, xc, yc, hsize):
     data = data_cube.reshape(n_stars,-1) 
     weights = weight_cube.reshape(n_stars, -1) 
 
-    corners = np.array([[0, 0], [0, xmax], [ymax,ymax], [ymax, 0]])
+    corners = np.array([[0, 0], [0, xmax], [ymax, xmax], [ymax, 0]])
     
     return data, weights, corners, gain, data_file, weight_file
 
@@ -615,7 +615,7 @@ class MoffatPSF(object):
 
         self.initparamsfromseeing(seeing)
 
-    def set_data(self, data, weights, gain, fluxmax=None):
+    def set_data(self, full_data, full_weights, gain, fluxmax=None):
 
         # Load data:
         self.full_data = full_data
@@ -625,7 +625,7 @@ class MoffatPSF(object):
         self.gain = gain
 
         # Fluxmax is just carried through so it is output
-        if self.fluxmax is None:
+        if fluxmax is None:
             self.fluxmax = np.zeros(self.n_stars)
         else:
             self.fluxmax = fluxmax
@@ -688,7 +688,8 @@ class MoffatPSF(object):
         
         okparams = True
         for c in corners:
-            c_array = np.hstack([1, (c[1]-1000)/1000, (c[0]-2000)/1000])
+            c_array = np.array([1, self.ax * c[1] + self.bx, 
+                                self.ay * c[0] + self.by])
             wxx = (self.wxx_vector * c_array).sum()
             wyy = (self.wyy_vector * c_array).sum()
             wxy = (self.wxy_vector * c_array).sum()
@@ -864,6 +865,7 @@ class PSFResiduals(object):
         self.hsize = hsize
         self.nd = 2*self.hsize + 1
         self.n_r = self.nd**2
+        print self.n_r, self.nd
 
         # Degree of polynomial of R function determines shape of arrays:
         deg_dict = {0: 1, 1: 3, 2: 6}
@@ -1554,6 +1556,8 @@ class PSFResiduals(object):
         self.c = c
         self.r_poly = r_poly
     
+        self.covariance = f.inv()
+        self.dfluxes = np.diagonal(self.covariance.toarray())[:self.n_stars]
         self.final_chi2s = chi2s
 
         final_psi = self.psi_model(fit_vars, rconv=r_poly)
@@ -1761,8 +1765,12 @@ if __name__ == '__main__':
     print 'Starting fit with %s stars' % len(xc)
     data, weights, corners, gain, full_data, full_weights = get_data(args.prefix, xc, yc, hsize)
 
+    # The third corner is the top right corner of the image, thus = [ymax,xmax]
+    ymax, xmax = corners[2]
+
     # Fit the analytic portion of the PSF model:
-    M = MoffatPSF(hsize, xc, yc, full_data, full_weights, gain, fluxmax, degree=1)
+    M = MoffatPSF(hsize, xc, yc, xmax=xmax, ymax=ymax, degree=1)
+    M.set_data(full_data, full_weights, gain=gain, fluxmax=fluxmax)
     M.moffat_fit(init_seeing=seeing, init_fluxes=init_f)
     if not M.check_corners(corners):
         raise ValueError('Could not model a reasonable parameters spatial'
@@ -1772,8 +1780,12 @@ if __name__ == '__main__':
     print phi.sum(axis=1)
 
     # Given the analytic portion of the PSF, fit any residual shape in the PSF:
-    R = PSFResiduals(hsize, M.xc, M.yc, phi, M.stars, gain, M.xmax, M.ymax,
+    #R = PSFResiduals(hsize, M.xc, M.yc, phi, M.stars, gain, M.xmax, M.ymax,
+    #            degree=1)
+    R = PSFResiduals(hsize, M.xc, M.yc, phi, xmax=M.xmax, ymax=M.ymax,
                      degree=1)
+    R.set_data(M.stars, gain)
+
     # DEBUG option to load old output and recalculate results:
     if op.isfile(op.join(args.output_path, 'test_out.pkl')):
         R.stars_fit(op.join(args.output_path, 'test_out.pkl'))
