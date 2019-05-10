@@ -38,7 +38,7 @@ m.set_phi()
 phi = m.phi
 
 # Generate Moffat + Discrete Residual vignettes:
-resid_vars = np.hstack([psf_res['fluxes'], psf_res['r'].ravel(), psf_res['c']]) 
+resid_vars = np.hstack([psf_res['r'].ravel(), psf_res['c']]) 
 p = psf.PSFResiduals(hsize, xc, yc, phi.reshape(n_stars, -1), xmax=xsize,
                      ymax=ysize)
 # The final PSF vignettes:

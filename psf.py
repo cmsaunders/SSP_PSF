@@ -947,8 +947,8 @@ class PSFResiduals(object):
     def set_weights(self, vars, rconv):
         # The weights need to be corrected for the flux of the star
         fluxes = vars[:self.n_stars]
-        correction = fluxes[:,None] * self.psi_model(vars, rconv=rconv) \
-                     / self.gain
+        correction = fluxes[:,None] * self.psi_model(vars[self.n_stars:],
+                                                     rconv=rconv) / self.gain
         self.weights = (self.init_weights_inv + correction)**-1
         self.weights[self.bad_pix] = 0
 
@@ -1022,17 +1022,16 @@ class PSFResiduals(object):
                   (self.phi**2 * self.weights).sum(axis=1))
         return fluxes
 
-    def psi_model(self, vars, rconv=None):
+    def psi_model(self, psi_vars, rconv=None):
         # Combine analytic and discrete parts of the model:
         if rconv is None:
-            r = vars[self.n_stars:self.n_stars 
-                     + self.n_r * self.degree].reshape(self.degree,
-                                                       self.n_r)
+            r = psi_vars[:self.n_r * self.degree].reshape(self.degree,
+                                                           self.n_r)
             r_poly = np.array([self.convolve(rr) for rr in r])
             r_poly = np.transpose(r_poly, (1, 0, 2))
             rconv = (r_poly * self.rtile).sum(axis=1)
         
-        cs = vars[self.n_stars + self.degree * self.nd**2:][:self.degree]
+        cs = psi_vars[self.degree * self.nd**2:][:self.degree]
         c_poly = (cs[:,None] * self.cder).sum(axis=0)
         psi = ((1 - c_poly.reshape(-1,1))*self.phi + rconv)
 
@@ -1042,7 +1041,7 @@ class PSFResiduals(object):
         # Calculate the chi2 of the model
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv=rconv)
+        psi = self.psi_model(vars[self.n_stars:], rconv=rconv)
         lam = vars[-self.degree:]
         chi = (self.weights * (self.data - flux.reshape(-1,1)*psi)**2)
         return chi.sum(axis=1)
@@ -1085,7 +1084,7 @@ class PSFResiduals(object):
         # Find outlier pixels and set their weights to zero
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv=rconv)
+        psi = self.psi_model(vars[self.n_stars:], rconv=rconv)
         model = flux[:,None] * psi
         resids = self.data - model
         
@@ -1106,7 +1105,7 @@ class PSFResiduals(object):
                                 * self.nd**2].reshape(self.degree, self.n_r)
         cs = vars[self.n_stars + self.degree * self.nd**2:][:self.degree]
 
-        psi = self.psi_model(vars, rconv=rconv)
+        psi = self.psi_model(vars[self.n_stars:], rconv=rconv)
         lam = vars[-self.degree:]
         chi = (self.weights * (self.data - flux[:,None]*psi)**2).sum()
 
@@ -1124,7 +1123,7 @@ class PSFResiduals(object):
 
     def dlagdf_h(self,vars, rconv):
 
-        psi = self.psi_model(vars, rconv=rconv)
+        psi = self.psi_model(vars[self.n_stars:], rconv=rconv)
         dldf = -psi
 
         return dldf
@@ -1170,7 +1169,7 @@ class PSFResiduals(object):
         A = np.zeros((self.all_vars, self.all_vars))
 
         flux = vars[:self.n_stars]
-        psi = self.psi_model(vars, rconv=rconv)
+        psi = self.psi_model(vars[self.n_stars:], rconv=rconv)
         res = self.data - flux[:, None] * psi
 
         # Set up some variables that will be used multiple times below:
@@ -1560,7 +1559,7 @@ class PSFResiduals(object):
         self.dfluxes = np.diagonal(self.covariance.toarray())[:self.n_stars]
         self.final_chi2s = chi2s
 
-        final_psi = self.psi_model(fit_vars, rconv=r_poly)
+        final_psi = self.psi_model(fit_vars[self.n_stars:], rconv=r_poly)
         print final_psi.sum(axis=1)
         self.final_model = self.fluxes[:,None] * final_psi
 
