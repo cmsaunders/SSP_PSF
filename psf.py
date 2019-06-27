@@ -594,7 +594,6 @@ class MoffatPSF(object):
 
         self.outliers = np.zeros(self.n_stars, dtype=bool)
         self.use_outliers = np.zeros(self.n_stars, dtype=bool)
-        #self.ymax, self.xmax = full_data.shape
         self.ymax, self.xmax = ymax, xmax
 
         # Set up parameters to normalize the CCD-position dependent polynomials:
@@ -766,6 +765,7 @@ class MoffatPSF(object):
                 S.data_slice, S.weight_slice = vignette(self.full_data, 
                                                         self.full_weights, 
                                                         S.hsize, S.x, S.y) 
+                S.paramweight = np.zeros((3,3))
                 init_chis[i] = 1e10
         # Reset some helper variables based on the new positions:
         self.reset_pos()
@@ -899,6 +899,7 @@ class PSFResiduals(object):
         #Equation N repeated by the number of pixels to use for R:
         self.rder = np.repeat(self.cder[:self.degree], self.n_r, axis=0).T
         self.rtile = np.tile(self.cder[:self.degree], (self.n_r, 1, 1)).T
+        self.s_list = [None for s in range(self.n_stars)]
 
     def set_data(self, stars, gain):
         # Allow for debug cases where we don't have a list of stars
@@ -906,9 +907,14 @@ class PSFResiduals(object):
         self.stars = np.array(stars)        
         self.data = np.array([S.data_slice for S in stars])
         self.weights = np.array([S.weight_slice for S in stars])
-
         self.init_weights_inv = np.copy(self.weights**-1)
         self.bad_pix = np.zeros_like(self.weights, dtype=bool)
+
+        not_finite = (~np.isfinite(self.data).all(axis=1) |
+                      ~np.isfinite(self.weights).all(axis=1) | 
+                      (self.weights.sum(axis=1) == 0))
+        self.remove_outliers(~not_finite)
+
         self.gain = gain        
 
     #@profile
@@ -1046,7 +1052,7 @@ class PSFResiduals(object):
         chi = (self.weights * (self.data - flux.reshape(-1,1)*psi)**2)
         return chi.sum(axis=1)
 
-    def remove_outliers(self, chi2s, vars, r_poly, sigmacut=4):
+    def chi_outliers(self, chi2s, vars, r_poly, sigmacut=4):
         # Find and remove outlier stars, could be cleaner
 
         chi2_median = np.median(chi2s)
@@ -1056,12 +1062,16 @@ class PSFResiduals(object):
         non_outliers = chi2s <= max_chi2
 
         new_vars = np.copy(vars)
-        if (~non_outliers).sum() > 0:
-            for i in np.flatnonzero(~non_outliers)[::-1]:
-                print 'removing outlier star at %s, %s, with chi2 = %s' \
-                    % (self.xc[i], self.yc[i], chi2s[i])
-                new_vars = np.delete(new_vars, i)
+        for i in np.flatnonzero(~non_outliers)[::-1]:
+            print 'removing outlier star at %s, %s, with chi2 = %s' \
+                % (self.xc[i], self.yc[i], chi2s[i])
+            new_vars = np.delete(new_vars, i)
+        self.remove_outliers(non_outliers)
+        r_poly = r_poly[non_outliers]
+        return new_vars, r_poly
 
+    def remove_outliers(self, non_outliers):
+        if (~non_outliers).sum() > 0:
             self.n_stars = non_outliers.sum()
             self.stars = self.stars[non_outliers]
             self.data = self.data[non_outliers]
@@ -1077,8 +1087,6 @@ class PSFResiduals(object):
             self.all_vars = self.n_stars + self.n_r * self.degree + 2*self.degree
             self.s_list = [self.s_list[no] for no in np.flatnonzero(non_outliers)]
 
-        r_poly = r_poly[non_outliers]
-        return new_vars, r_poly
 
     def remove_outlier_pixels(self, vars, rconv, sigmacut=5):
         # Find outlier pixels and set their weights to zero
@@ -1536,9 +1544,12 @@ class PSFResiduals(object):
                 lagrangian_fid = new_lagr
                 chi2s = self.chi2s(fit_vars, r_poly)
 
-                fit_vars, r_poly = self.remove_outliers(chi2s, fit_vars, r_poly)
+                fit_vars, r_poly = self.chi_outliers(chi2s, fit_vars, r_poly)
 
-                print 'Iteration time:', time.time() - t00
+                iter_time = time.time() - t00
+                print 'Iteration time:', iter_time
+                if iter_time > 5 * 60:
+                    raise ValueError('This CCD is too slow--giving up')
             # If we are on the first outer loop, get rid of outlier pixels:
             if loop == 0:
                 bad_pix = self.remove_outlier_pixels(fit_vars, r_poly)
